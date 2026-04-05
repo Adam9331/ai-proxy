@@ -43,27 +43,32 @@ app.post("/ask-page", async (req, res) => {
     }
 
     const prompt = `
-Jesteś asystentem analizującym stronę.
+Jesteś asystentem analizującym aktualnie otwartą stronę internetową.
 
 Zasady:
-- odpowiadaj po polsku
-- używaj tylko informacji z treści strony
-- podawaj konkretne fragmenty jako źródła
+- odpowiadaj po polsku,
+- używaj wyłącznie informacji z tekstu strony,
+- cytaty muszą być dokładnymi fragmentami 1:1 z tekstu strony,
+- nie parafrazuj cytatów,
+- zwróć WYŁĄCZNIE poprawny JSON.
 
-FORMAT ODPOWIEDZI:
+Format JSON:
+{
+  "answer": "krótka odpowiedź po polsku",
+  "quotes": [
+    "dokładny cytat 1 ze strony",
+    "dokładny cytat 2 ze strony",
+    "dokładny cytat 3 ze strony"
+  ]
+}
 
-Odpowiedź:
-...
+Tytuł strony: ${title || "brak"}
+URL: ${url || "brak"}
 
-Źródła:
-- "fragment tekstu 1"
-- "fragment tekstu 2"
-- "fragment tekstu 3"
-
-Treść strony:
+Tekst strony:
 ${String(pageText).slice(0, 20000)}
 
-Pytanie:
+Pytanie użytkownika:
 ${question}
 `.trim();
 
@@ -95,11 +100,29 @@ ${question}
       });
     }
 
-    const answer =
-      data?.candidates?.[0]?.content?.parts?.map(p => p.text).join("\n") ||
-      "Brak odpowiedzi.";
+    const raw =
+      data?.candidates?.[0]?.content?.parts?.map(p => p.text).join("\n") || "";
 
-    return res.json({ answer });
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        return res.status(500).json({
+          error: "Model nie zwrócił poprawnego JSON",
+          raw
+        });
+      }
+      parsed = JSON.parse(jsonMatch[0]);
+    }
+
+    return res.json({
+      answer: parsed.answer || "Brak odpowiedzi.",
+      quotes: Array.isArray(parsed.quotes) ? parsed.quotes : [],
+      title: title || "",
+      url: url || ""
+    });
   } catch (error) {
     return res.status(500).json({
       error: "Proxy error",
