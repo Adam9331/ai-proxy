@@ -59,7 +59,25 @@ app.post("/ask-page", async (req, res) => {
     const { question, pageText, title, url } = req.body || {};
     if (!question || !pageText) return res.status(400).json({ error: "Brak question albo pageText" });
 
-    const prompt = `
+    const isPdf = url && url.startsWith("pdf://");
+
+    const prompt = isPdf ? `
+Jesteś asystentem analizującym treść dokumentu PDF.
+Zasady:
+- odpowiadaj po polsku,
+- opieraj się WYŁĄCZNIE na treści przekazanego dokumentu,
+- cytuj konkretne fragmenty gdy odpowiadasz,
+- jeśli informacja jest w dokumencie — znajdź ją i podaj,
+- jeśli naprawdę jej nie ma — napisz to wprost,
+- NIE dodawaj sekcji Źródło na końcu.
+
+Nazwa dokumentu: ${title || "brak"}
+
+Treść dokumentu PDF:
+${String(pageText).slice(0, 20000)}
+
+Pytanie:
+${question}`.trim() : `
 Jesteś asystentem analizującym aktualnie otwartą stronę internetową.
 Zasady:
 - odpowiadaj po polsku,
@@ -139,21 +157,30 @@ app.post("/parse-pdf", upload.single("pdf"), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "Brak pliku PDF" });
 
     // pdf2json parsuje PDF z bufora
-    const text = await new Promise((resolve, reject) => {
+    const rawText = await new Promise((resolve, reject) => {
       const parser = new PDFParser(null, 1);
       parser.on("pdfParser_dataReady", () => resolve(parser.getRawTextContent()));
       parser.on("pdfParser_dataError", (err) => reject(new Error(String(err?.parserError || err))));
       parser.parseBuffer(req.file.buffer);
     });
 
-    if (!text || !text.trim()) {
+    if (!rawText || !rawText.trim()) {
       return res.status(422).json({ error: "PDF nie zawiera tekstu (może być skanowany obraz)" });
     }
 
-    const pages = Math.max(1, (text.match(/----------------Page/g) || []).length);
+    // Policz strony
+    const pages = Math.max(1, (rawText.match(/----------------Page/g) || []).length);
+
+    // Wyczyść tekst — usuń śmieci z pdf2json, zachowaj czytelny tekst
+    const text = rawText
+      .replace(/----------------Page \(\d+\) Break----------------/g, "\n\n--- Strona $& ---\n\n")
+      .replace(/\r\n/g, "\n")
+      .replace(/[ \t]{3,}/g, " ")        // wielokrotne spacje → jedna
+      .replace(/\n{4,}/g, "\n\n\n")   // wielokrotne puste linie → max 3
+      .trim();
 
     return res.json({
-      text: text.slice(0, 50000),
+      text: text.slice(0, 60000),
       pages,
       chars: text.length
     });
