@@ -16,11 +16,39 @@ const HOST = "0.0.0.0";
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const PROXY_SECRET   = process.env.PROXY_SECRET || "";
 const MODEL          = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 if (!GEMINI_API_KEY) { console.error("Brak GEMINI_API_KEY"); process.exit(1); }
 if (!TAVILY_API_KEY) { console.error("Brak TAVILY_API_KEY"); process.exit(1); }
+
+// ─── OpenRouter helper ────────────────────────────────────────────────────────
+async function callOpenRouter(prompt, model = "perplexity/sonar-reasoning") {
+  if (!OPENROUTER_API_KEY) throw new Error("Brak klucza OPENROUTER_API_KEY");
+  
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://github.com/lek-adam/ai-sidebar", // Opcjonalne
+      "X-Title": "AI Sidebar Custom"
+    },
+    body: JSON.stringify({
+      model: model,
+      messages: [{ role: "user", content: prompt }]
+    })
+  });
+  
+  const data = await res.json();
+  if (!res.ok) throw new Error(JSON.stringify(data));
+  return {
+    answer: data.choices[0].message.content,
+    // OpenRouter dla modeli Sonar często zwraca źródła w polu 'citations'
+    sources: data.citations || [] 
+  };
+}
 
 // ─── Auth helper ─────────────────────────────────────────────────────────────
 function checkSecret(req, res) {
@@ -195,6 +223,31 @@ ${context}`.trim();
     return res.json({ answer, sources: results });
   } catch (error) {
     return res.status(500).json({ error: "Proxy error", details: String(error) });
+  }
+});
+
+// ─── POST /search-super (OpenRouter / Perplexity) ─────────────────────────────
+app.post("/search-super", async (req, res) => {
+  try {
+    if (!checkSecret(req, res)) return;
+    const { question } = req.body || {};
+    if (!question) return res.status(400).json({ error: "Brak pytania" });
+
+    // Używamy Perplexity Sonar Reasoning przez OpenRouter
+    const result = await callOpenRouter(question, "perplexity/sonar-reasoning");
+    
+    // OpenRouter dla modeli Sonar często zwraca listę cytatów jako array URL-i w polu 'citations'
+    // Jeśli nie ma, zwróć pustą tablicę.
+    const sources = (result.sources || []).map((url, i) => ({
+      title: `Źródło [${i + 1}]`,
+      url: url,
+      snippet: ""
+    }));
+
+    return res.json({ answer: result.answer, sources });
+  } catch (error) {
+    console.error("OpenRouter Error:", error);
+    return res.status(500).json({ error: "OpenRouter Proxy error", details: String(error) });
   }
 });
 
