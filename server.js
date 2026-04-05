@@ -233,8 +233,8 @@ app.post("/search-super", async (req, res) => {
     const { question } = req.body || {};
     if (!question) return res.status(400).json({ error: "Brak pytania" });
 
-    // Używamy Perplexity Sonar Reasoning przez OpenRouter
-    const result = await callOpenRouter(question, "perplexity/sonar-reasoning");
+    // Używamy Perplexity Sonar (model natywnie obsługujący wyszukiwanie) przez OpenRouter
+    const result = await callOpenRouter(question, "perplexity/sonar");
     
     // OpenRouter dla modeli Sonar często zwraca listę cytatów jako array URL-i w polu 'citations'
     // Jeśli nie ma, zwróć pustą tablicę.
