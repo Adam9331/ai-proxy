@@ -247,7 +247,7 @@ app.post("/search-super", async (req, res) => {
     return res.json({ answer: result.answer, sources });
   } catch (error) {
     console.error("OpenRouter Error:", error);
-    return res.status(500).json({ error: "OpenRouter Proxy error", details: String(error) });
+    return res.status(500).json({ error: "OpenRouter Error: " + (error.message || String(error)) });
   }
 });
 
