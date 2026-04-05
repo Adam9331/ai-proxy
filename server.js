@@ -47,25 +47,17 @@ Jesteś asystentem analizującym aktualnie otwartą stronę internetową.
 
 Zasady:
 - odpowiadaj po polsku,
-- używaj wyłącznie informacji z tekstu strony,
-- cytaty muszą być dokładnymi fragmentami 1:1 z tekstu strony,
-- nie parafrazuj cytatów,
-- zwróć WYŁĄCZNIE poprawny JSON.
-
-Format JSON:
-{
-  "answer": "krótka odpowiedź po polsku",
-  "quotes": [
-    "dokładny cytat 1 ze strony",
-    "dokładny cytat 2 ze strony",
-    "dokładny cytat 3 ze strony"
-  ]
-}
+- opieraj się tylko na treści przekazanej strony,
+- jeśli czegoś nie ma w treści, napisz to wprost,
+- na końcu dodaj krótką sekcję:
+Źródło:
+- Tytuł: ...
+- URL: ...
 
 Tytuł strony: ${title || "brak"}
 URL: ${url || "brak"}
 
-Tekst strony:
+Treść strony:
 ${String(pageText).slice(0, 20000)}
 
 Pytanie użytkownika:
@@ -100,29 +92,11 @@ ${question}
       });
     }
 
-    const raw =
-      data?.candidates?.[0]?.content?.parts?.map(p => p.text).join("\n") || "";
+    const answer =
+      data?.candidates?.[0]?.content?.parts?.map(p => p.text).join("\n") ||
+      "Brak odpowiedzi.";
 
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        return res.status(500).json({
-          error: "Model nie zwrócił poprawnego JSON",
-          raw
-        });
-      }
-      parsed = JSON.parse(jsonMatch[0]);
-    }
-
-    return res.json({
-      answer: parsed.answer || "Brak odpowiedzi.",
-      quotes: Array.isArray(parsed.quotes) ? parsed.quotes : [],
-      title: title || "",
-      url: url || ""
-    });
+    return res.json({ answer });
   } catch (error) {
     return res.status(500).json({
       error: "Proxy error",
