@@ -66,17 +66,22 @@ Jesteś asystentem analizującym treść dokumentu PDF.
 Zasady:
 - odpowiadaj po polsku,
 - opieraj się WYŁĄCZNIE na treści przekazanego dokumentu,
-- cytuj konkretne fragmenty gdy odpowiadasz,
-- jeśli informacja jest w dokumencie — znajdź ją i podaj,
+- jeśli informacja jest w dokumencie — znajdź ją i podaj dokładnie,
 - jeśli naprawdę jej nie ma — napisz to wprost.
 
-Na końcu odpowiedzi dodaj sekcję w dokładnie tym formacie (nic więcej):
-STRONY: 1,3,5
-(podaj numery stron PDF z których pochodzi odpowiedź, oddzielone przecinkami)
+Na końcu odpowiedzi dodaj sekcję w DOKŁADNIE tym formacie:
+CYTATY: "dokładny fragment 1"|"dokładny fragment 2"|"dokładny fragment 3"
+
+Zasady dla cytatów:
+- max 3 cytaty
+- każdy cytat to 4-8 kolejnych słów skopiowanych DOSŁOWNIE z tekstu dokumentu
+- cytaty muszą być fragmentami które FAKTYCZNIE zawierają odpowiedź
+- nie używaj wielokropków ani skrótów wewnątrz cytatu
+- oddzielaj cytaty znakiem |
 
 Nazwa dokumentu: ${title || "brak"}
 
-Treść dokumentu PDF (każda strona oddzielona markerem "--- Strona N ---"):
+Treść dokumentu PDF:
 ${String(pageText).slice(0, 20000)}
 
 Pytanie:
@@ -97,18 +102,25 @@ ${question}`.trim();
 
     const raw = await callGemini(prompt);
 
-    // Dla PDF — wyciągnij numery stron z odpowiedzi
+    // Dla PDF — wyciągnij cytaty i zbuduj text fragment linki
     if (isPdf) {
-      const pagesMatch = raw.match(/STRONY:\s*([\d,\s]+)/i);
-      const pageNumbers = pagesMatch
-        ? pagesMatch[1].split(",").map(p => parseInt(p.trim())).filter(n => !isNaN(n) && n > 0)
+      const cytatsMatch = raw.match(/CYTATY:\s*(.+?)(?:
+|$)/i);
+      const quotes = cytatsMatch
+        ? cytatsMatch[1]
+            .split("|")
+            .map(q => q.trim().replace(/^"|"$/g, "").trim())
+            .filter(q => q.length > 5)
+            .slice(0, 3)
         : [];
-      const answer = raw.replace(/\n*STRONY:.*$/im, "").trim();
 
-      const sources = pageNumbers.map(p => ({
-        page: p,
-        title: `Strona ${p}`,
-        url: url.replace("pdf://", "") // nazwa pliku
+      const answer = raw.replace(/\n*CYTATY:.*$/im, "").trim();
+      const pdfFileName = url.replace("pdf://", "");
+
+      const sources = quotes.map((quote, i) => ({
+        title: quote,
+        quote: quote,
+        fileName: pdfFileName
       }));
 
       return res.json({ answer, sources });
