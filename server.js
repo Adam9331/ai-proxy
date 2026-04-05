@@ -1,7 +1,10 @@
 import express from "express";
 import cors from "cors";
+import multer from "multer";
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
 
 const app = express();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
@@ -185,6 +188,26 @@ ${context}
 
   } catch (error) {
     return res.status(500).json({ error: "Proxy error", details: String(error) });
+  }
+});
+
+// ─── POST /parse-pdf ───────────────────────────────────────────────────────
+app.post("/parse-pdf", upload.single("pdf"), async (req, res) => {
+  try {
+    if (!checkSecret(req, res)) return;
+    if (!req.file) return res.status(400).json({ error: "Brak pliku PDF" });
+
+    const data = await pdfParse(req.file.buffer);
+    const text  = data.text || "";
+    const pages = data.numpages || 0;
+
+    if (!text.trim()) {
+      return res.status(422).json({ error: "PDF nie zawiera tekstu (moze byc skanowany obraz)" });
+    }
+
+    return res.json({ text: text.slice(0, 50000), pages, chars: text.length });
+  } catch (error) {
+    return res.status(500).json({ error: "Blad parsowania PDF", details: String(error) });
   }
 });
 
