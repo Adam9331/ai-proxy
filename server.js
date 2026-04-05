@@ -3,7 +3,7 @@ import cors from "cors";
 import multer from "multer";
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse");
+const PDFParser = require("pdf2json");
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -138,23 +138,28 @@ app.post("/parse-pdf", upload.single("pdf"), async (req, res) => {
 
     if (!req.file) return res.status(400).json({ error: "Brak pliku PDF" });
 
-    // pdf-parse wyciąga tekst z bufora
-    const data = await pdfParse(req.file.buffer);
+    // pdf2json parsuje PDF z bufora
+    const text = await new Promise((resolve, reject) => {
+      const parser = new PDFParser(null, 1);
+      parser.on("pdfParser_dataReady", () => resolve(parser.getRawTextContent()));
+      parser.on("pdfParser_dataError", (err) => reject(new Error(String(err?.parserError || err))));
+      parser.parseBuffer(req.file.buffer);
+    });
 
-    const text  = data.text || "";
-    const pages = data.numpages || 0;
-
-    if (!text.trim()) {
+    if (!text || !text.trim()) {
       return res.status(422).json({ error: "PDF nie zawiera tekstu (może być skanowany obraz)" });
     }
 
+    const pages = Math.max(1, (text.match(/----------------Page/g) || []).length);
+
     return res.json({
-      text: text.slice(0, 50000), // max 50k znaków
+      text: text.slice(0, 50000),
       pages,
       chars: text.length
     });
 
   } catch (error) {
+    console.error("PDF parse error:", error);
     return res.status(500).json({ error: "Błąd parsowania PDF", details: String(error) });
   }
 });
