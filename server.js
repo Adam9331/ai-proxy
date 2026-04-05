@@ -104,8 +104,7 @@ ${question}`.trim();
 
     // Dla PDF — wyciągnij cytaty i zbuduj text fragment linki
     if (isPdf) {
-      const cytatsMatch = raw.match(/CYTATY:\s*(.+?)(?:
-|$)/i);
+      const cytatsMatch = raw.match(/CYTATY:\s*([^\n\r]+)/i);
       const quotes = cytatsMatch
         ? cytatsMatch[1]
             .split("|")
@@ -114,7 +113,7 @@ ${question}`.trim();
             .slice(0, 3)
         : [];
 
-      const answer = raw.replace(/\n*CYTATY:.*$/im, "").trim();
+      const answer = raw.replace(/[\n\r]*CYTATY:[^\n\r]*/im, "").trim();
       const pdfFileName = url.replace("pdf://", "");
 
       const sources = quotes.map((quote, i) => ({
