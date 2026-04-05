@@ -43,24 +43,27 @@ app.post("/ask-page", async (req, res) => {
     }
 
     const prompt = `
-Jesteś asystentem analizującym aktualnie otwartą stronę internetową.
+Jesteś asystentem analizującym stronę.
 
 Zasady:
-- odpowiadaj po polsku,
-- opieraj się tylko na treści przekazanej strony,
-- jeśli czegoś nie ma w treści, napisz to wprost,
-- na końcu dodaj krótką sekcję:
-Źródło:
-- Tytuł: ...
-- URL: ...
+- odpowiadaj po polsku
+- używaj tylko informacji z treści strony
+- podawaj konkretne fragmenty jako źródła
 
-Tytuł strony: ${title || "brak"}
-URL: ${url || "brak"}
+FORMAT ODPOWIEDZI:
+
+Odpowiedź:
+...
+
+Źródła:
+- "fragment tekstu 1"
+- "fragment tekstu 2"
+- "fragment tekstu 3"
 
 Treść strony:
 ${String(pageText).slice(0, 20000)}
 
-Pytanie użytkownika:
+Pytanie:
 ${question}
 `.trim();
 
