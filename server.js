@@ -1,7 +1,9 @@
 import express from "express";
 import cors from "cors";
 import multer from "multer";
-import pdfParse from "pdf-parse/lib/pdf-parse.js";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const pdfParse = require("pdf-parse");
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -17,15 +19,8 @@ const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
 const PROXY_SECRET   = process.env.PROXY_SECRET || "";
 const MODEL          = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
-if (!GEMINI_API_KEY) {
-  console.error("Brak GEMINI_API_KEY");
-  process.exit(1);
-}
-
-if (!TAVILY_API_KEY) {
-  console.error("Brak TAVILY_API_KEY");
-  process.exit(1);
-}
+if (!GEMINI_API_KEY) { console.error("Brak GEMINI_API_KEY"); process.exit(1); }
+if (!TAVILY_API_KEY) { console.error("Brak TAVILY_API_KEY"); process.exit(1); }
 
 // ─── Auth helper ─────────────────────────────────────────────────────────────
 function checkSecret(req, res) {
@@ -37,99 +32,69 @@ function checkSecret(req, res) {
   return true;
 }
 
-// ─── Gemini helper ───────────────────────────────────────────────────────────
+// ─── Gemini helper ────────────────────────────────────────────────────────────
 async function callGemini(prompt) {
   const geminiRes = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": GEMINI_API_KEY
-      },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }]
-      })
+      headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] })
     }
   );
-
   const data = await geminiRes.json();
-
-  if (!geminiRes.ok) {
-    throw new Error(JSON.stringify(data));
-  }
-
-  return (
-    data?.candidates?.[0]?.content?.parts?.map(p => p.text).join("\n") ||
-    "Brak odpowiedzi."
-  );
+  if (!geminiRes.ok) throw new Error(JSON.stringify(data));
+  return data?.candidates?.[0]?.content?.parts?.map(p => p.text).join("\n") || "Brak odpowiedzi.";
 }
 
-// ─── GET / ───────────────────────────────────────────────────────────────────
+// ─── GET / ────────────────────────────────────────────────────────────────────
 app.get("/", (_req, res) => {
   res.json({ ok: true, service: "ai-proxy", model: MODEL });
 });
 
-// ─── POST /ask-page ──────────────────────────────────────────────────────────
+// ─── POST /ask-page ───────────────────────────────────────────────────────────
 app.post("/ask-page", async (req, res) => {
   try {
     if (!checkSecret(req, res)) return;
-
     const { question, pageText, title, url } = req.body || {};
-
-    if (!question || !pageText) {
-      return res.status(400).json({ error: "Brak question albo pageText" });
-    }
+    if (!question || !pageText) return res.status(400).json({ error: "Brak question albo pageText" });
 
     const prompt = `
 Jesteś asystentem analizującym aktualnie otwartą stronę internetową.
-
 Zasady:
 - odpowiadaj po polsku,
 - opieraj się tylko na treści przekazanej strony,
 - jeśli czegoś nie ma w treści, napisz to wprost,
-- na końcu dodaj krótką sekcję:
-Źródło:
-- Tytuł: ...
-- URL: ...
+- na końcu dodaj krótką sekcję: Źródło:\n- Tytuł: ...\n- URL: ...
 
 Tytuł strony: ${title || "brak"}
 URL: ${url || "brak"}
-
 Treść strony:
 ${String(pageText).slice(0, 20000)}
-
 Pytanie użytkownika:
-${question}
-`.trim();
+${question}`.trim();
 
     const answer = await callGemini(prompt);
     return res.json({ answer });
-
   } catch (error) {
     return res.status(500).json({ error: "Proxy error", details: String(error) });
   }
 });
 
-// ─── POST /search-web ────────────────────────────────────────────────────────
+// ─── POST /search-web ─────────────────────────────────────────────────────────
 app.post("/search-web", async (req, res) => {
   try {
     if (!checkSecret(req, res)) return;
-
     const { question } = req.body || {};
+    if (!question) return res.status(400).json({ error: "Brak question" });
 
-    if (!question) {
-      return res.status(400).json({ error: "Brak question" });
-    }
-
-    // 1. Zapytaj Tavily
     const tavilyRes = await fetch("https://api.tavily.com/search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         api_key: TAVILY_API_KEY,
         query: question,
-        search_depth: "basic",   // "basic" = 1 zapytanie; "advanced" = 2 (drożej)
+        search_depth: "basic",
         max_results: 5,
         include_answer: false,
         include_raw_content: false
@@ -137,81 +102,64 @@ app.post("/search-web", async (req, res) => {
     });
 
     const tavilyData = await tavilyRes.json();
+    if (!tavilyRes.ok) return res.status(502).json({ error: "Tavily API error", details: tavilyData });
 
-    if (!tavilyRes.ok) {
-      return res.status(502).json({
-        error: "Tavily API error",
-        details: tavilyData
-      });
-    }
-
-    // 2. Wyciągnij wyniki
     const results = (tavilyData.results || []).map(r => ({
-      title:   r.title   || "",
-      url:     r.url     || "",
-      snippet: r.content || ""
+      title: r.title || "", url: r.url || "", snippet: r.content || ""
     }));
 
-    if (results.length === 0) {
-      return res.json({
-        answer: "Nie znalazłem wyników dla tego zapytania.",
-        sources: []
-      });
-    }
+    if (results.length === 0) return res.json({ answer: "Nie znalazłem wyników.", sources: [] });
 
-    // 3. Zbuduj kontekst dla Gemini
-    const context = results
-      .map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.snippet}`)
-      .join("\n\n");
+    const context = results.map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.snippet}`).join("\n\n");
 
     const prompt = `
 Jesteś asystentem wyszukującym informacje w internecie.
-
 Zasady:
 - odpowiadaj po polsku,
 - opieraj się TYLKO na poniższych wynikach wyszukiwania,
-- syntetyzuj informacje z różnych źródeł w spójną odpowiedź,
-- pisz rzeczowo i konkretnie,
-- NIE dodawaj sekcji "Źródło" na końcu — źródła są obsługiwane osobno.
+- syntetyzuj informacje w spójną odpowiedź,
+- NIE dodawaj sekcji "Źródło" — źródła są obsługiwane osobno.
 
-Pytanie użytkownika: ${question}
-
+Pytanie: ${question}
 Wyniki wyszukiwania:
-${context}
-`.trim();
+${context}`.trim();
 
-    // 4. Gemini syntetyzuje
     const answer = await callGemini(prompt);
-
-    // 5. Zwróć odpowiedź + źródła osobno
     return res.json({ answer, sources: results });
-
   } catch (error) {
     return res.status(500).json({ error: "Proxy error", details: String(error) });
   }
 });
 
-// ─── POST /parse-pdf ───────────────────────────────────────────────────────
+// ─── POST /parse-pdf ──────────────────────────────────────────────────────────
 app.post("/parse-pdf", upload.single("pdf"), async (req, res) => {
   try {
     if (!checkSecret(req, res)) return;
+
     if (!req.file) return res.status(400).json({ error: "Brak pliku PDF" });
 
+    // pdf-parse wyciąga tekst z bufora
     const data = await pdfParse(req.file.buffer);
+
     const text  = data.text || "";
     const pages = data.numpages || 0;
 
     if (!text.trim()) {
-      return res.status(422).json({ error: "PDF nie zawiera tekstu (moze byc skanowany obraz)" });
+      return res.status(422).json({ error: "PDF nie zawiera tekstu (może być skanowany obraz)" });
     }
 
-    return res.json({ text: text.slice(0, 50000), pages, chars: text.length });
+    return res.json({
+      text: text.slice(0, 50000), // max 50k znaków
+      pages,
+      chars: text.length
+    });
+
   } catch (error) {
-    return res.status(500).json({ error: "Blad parsowania PDF", details: String(error) });
+    return res.status(500).json({ error: "Błąd parsowania PDF", details: String(error) });
   }
 });
 
-// ─── Start ───────────────────────────────────────────────────────────────────
+// ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, HOST, () => {
   console.log(`Proxy działa na http://${HOST}:${PORT}`);
 });
