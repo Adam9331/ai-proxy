@@ -68,12 +68,15 @@ Zasady:
 - opieraj się WYŁĄCZNIE na treści przekazanego dokumentu,
 - cytuj konkretne fragmenty gdy odpowiadasz,
 - jeśli informacja jest w dokumencie — znajdź ją i podaj,
-- jeśli naprawdę jej nie ma — napisz to wprost,
-- NIE dodawaj sekcji Źródło na końcu.
+- jeśli naprawdę jej nie ma — napisz to wprost.
+
+Na końcu odpowiedzi dodaj sekcję w dokładnie tym formacie (nic więcej):
+STRONY: 1,3,5
+(podaj numery stron PDF z których pochodzi odpowiedź, oddzielone przecinkami)
 
 Nazwa dokumentu: ${title || "brak"}
 
-Treść dokumentu PDF:
+Treść dokumentu PDF (każda strona oddzielona markerem "--- Strona N ---"):
 ${String(pageText).slice(0, 20000)}
 
 Pytanie:
@@ -92,8 +95,26 @@ ${String(pageText).slice(0, 20000)}
 Pytanie użytkownika:
 ${question}`.trim();
 
-    const answer = await callGemini(prompt);
-    return res.json({ answer });
+    const raw = await callGemini(prompt);
+
+    // Dla PDF — wyciągnij numery stron z odpowiedzi
+    if (isPdf) {
+      const pagesMatch = raw.match(/STRONY:\s*([\d,\s]+)/i);
+      const pageNumbers = pagesMatch
+        ? pagesMatch[1].split(",").map(p => parseInt(p.trim())).filter(n => !isNaN(n) && n > 0)
+        : [];
+      const answer = raw.replace(/\n*STRONY:.*$/im, "").trim();
+
+      const sources = pageNumbers.map(p => ({
+        page: p,
+        title: `Strona ${p}`,
+        url: url.replace("pdf://", "") // nazwa pliku
+      }));
+
+      return res.json({ answer, sources });
+    }
+
+    return res.json({ answer: raw });
   } catch (error) {
     return res.status(500).json({ error: "Proxy error", details: String(error) });
   }
