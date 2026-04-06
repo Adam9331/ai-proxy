@@ -61,18 +61,42 @@ function checkSecret(req, res) {
 }
 
 // ─── Gemini helper ────────────────────────────────────────────────────────────
-async function callGemini(prompt) {
+async function callGemini(prompt, useSearch = false) {
+  const body = {
+    contents: [{ role: "user", parts: [{ text: prompt }] }]
+  };
+
+  if (useSearch) {
+    body.tools = [{ google_search: {} }];
+  }
+
   const geminiRes = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
-      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] })
+      body: JSON.stringify(body)
     }
   );
+  
   const data = await geminiRes.json();
   if (!geminiRes.ok) throw new Error(JSON.stringify(data));
-  return data?.candidates?.[0]?.content?.parts?.map(p => p.text).join("\n") || "Brak odpowiedzi.";
+
+  const candidate = data?.candidates?.[0];
+  const answer = candidate?.content?.parts?.map(p => p.text).join("\n") || "Brak odpowiedzi.";
+  
+  // Wyciąganie źródeł z Google Search Grounding
+  let sources = [];
+  if (useSearch && candidate?.groundingMetadata?.groundingChunks) {
+    sources = candidate.groundingMetadata.groundingChunks
+      .filter(chunk => chunk.web)
+      .map(chunk => ({
+        title: chunk.web.title,
+        url: chunk.web.uri
+      }));
+  }
+
+  return { answer, sources };
 }
 
 // ─── GET / ────────────────────────────────────────────────────────────────────
@@ -129,7 +153,8 @@ ${String(pageText).slice(0, 20000)}
 Pytanie użytkownika:
 ${question}`.trim();
 
-    const raw = await callGemini(prompt);
+    const { answer, sources: groundingSources } = await callGemini(prompt);
+    const raw = answer;
 
     // Dla PDF — wyciągnij cytaty i zbuduj text fragment linki
     if (isPdf) {
@@ -157,7 +182,7 @@ ${question}`.trim();
         quotes = quotes.slice(0, 3);
       }
 
-      const answer = raw.replace(/[\n\r]*CYTATY:[^\n\r]*/im, "").trim();
+      const cleanAnswer = raw.replace(/[\n\r]*CYTATY:[^\n\r]*/im, "").trim();
       const pdfFileName = url.replace("pdf://", "");
 
       const sources = quotes.map((q, i) => ({
@@ -167,7 +192,7 @@ ${question}`.trim();
         fileName: pdfFileName
       }));
 
-      return res.json({ answer, sources });
+      return res.json({ answer: cleanAnswer, sources });
     }
 
     return res.json({ answer: raw });
@@ -183,45 +208,27 @@ app.post("/search-web", async (req, res) => {
     const { question } = req.body || {};
     if (!question) return res.status(400).json({ error: "Brak question" });
 
-    const tavilyRes = await fetch("https://api.tavily.com/search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        api_key: TAVILY_API_KEY,
-        query: question,
-        search_depth: "basic",
-        max_results: 5,
-        include_answer: false,
-        include_raw_content: false
-      })
-    });
-
-    const tavilyData = await tavilyRes.json();
-    if (!tavilyRes.ok) return res.status(502).json({ error: "Tavily API error", details: tavilyData });
-
-    const results = (tavilyData.results || []).map(r => ({
-      title: r.title || "", url: r.url || "", snippet: r.content || ""
-    }));
-
-    if (results.length === 0) return res.json({ answer: "Nie znalazłem wyników.", sources: [] });
-
-    const context = results.map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.snippet}`).join("\n\n");
-
     const prompt = `
-Jesteś asystentem wyszukującym informacje w internecie.
+Jesteś asystentem wyszukującym informacje w internecie przy użyciu Google Search.
 Zasady:
 - odpowiadaj po polsku,
-- opieraj się TYLKO na poniższych wynikach wyszukiwania,
 - syntetyzuj informacje w spójną odpowiedź,
-- NIE dodawaj sekcji "Źródło" — źródła są obsługiwane osobno.
+- NIE dodawaj na końcu sekcji ze źródłami — są one obsługiwane automatycznie przez mechanizm grounding.
 
-Pytanie: ${question}
-Wyniki wyszukiwania:
-${context}`.trim();
+Pytanie: ${question}`;
 
-    const answer = await callGemini(prompt);
-    return res.json({ answer, sources: results });
+    const { answer, sources } = await callGemini(prompt, true);
+    
+    // Formatuje źródła tak, aby pasowały do frontendu
+    const formattedSources = sources.map(s => ({
+      title: s.title,
+      url: s.url,
+      snippet: "" // Gemini Grounding nie zawsze zwraca snippet w tym samym formacie, co Tavily
+    }));
+
+    return res.json({ answer, sources: formattedSources });
   } catch (error) {
+    console.error("Gemini Search Error:", error);
     return res.status(500).json({ error: "Proxy error", details: String(error) });
   }
 });
