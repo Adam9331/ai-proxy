@@ -88,12 +88,28 @@ async function callGemini(prompt, useSearch = false) {
   // Wyciąganie źródeł z Google Search Grounding
   let sources = [];
   if (useSearch && candidate?.groundingMetadata?.groundingChunks) {
-    sources = candidate.groundingMetadata.groundingChunks
-      .filter(chunk => chunk.web)
-      .map(chunk => ({
-        title: chunk.web.title,
-        url: chunk.web.uri
-      }));
+    candidate.groundingMetadata.groundingChunks.forEach(chunk => {
+      let title = chunk?.web?.title || "";
+      const url = chunk?.web?.uri || "";
+      
+      if (!url) return;
+
+      // Jeśli tytuł jest pusty lub techniczny ("Vertex", "Search", "Google"), upiększ go
+      const technicalTerms = ["vertex", "search", "google", "grounding", "cloud"];
+      const isTechnical = technicalTerms.some(term => title.toLowerCase().includes(term));
+      
+      if (!title || isTechnical) {
+        try {
+          const domain = new URL(url).hostname.replace("www.", "");
+          // Jeśli mamy techniczny tytuł, używamy domeny + (jeśli tytuł coś zawiera) reszty tytułu
+          title = domain.charAt(0).toUpperCase() + domain.slice(1);
+        } catch {
+          if (!title) title = "Źródło";
+        }
+      }
+
+      sources.push({ title, url });
+    });
   }
 
   return { answer, sources };
