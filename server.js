@@ -241,13 +241,63 @@ Zasady:
 
 Pytanie: ${question}`;
 
-    const { answer, sources } = await callGemini(prompt, true);
+    const { answer: rawAnswer, sources: groundingSources } = await callGemini(prompt, true);
+    let answer = rawAnswer;
     
-    // Formatuje źródła tak, aby pasowały do frontendu. 
-    const formattedSources = sources.map(s => ({
+    // INTELIGENTNY PARSER ŹRÓDEŁ
+    const sourcesHeader = "**Wykorzystane źródła:**";
+    const headerIndex = answer.indexOf(sourcesHeader);
+    let finalSources = groundingSources.map(s => ({ ...s, snippet: s.snippet || "" }));
+
+    if (headerIndex !== -1) {
+      const mainPart = answer.substring(0, headerIndex + sourcesHeader.length);
+      const sourcesPart = answer.substring(headerIndex + sourcesHeader.length).trim();
+      
+      // Rozbijamy sekcję źródeł na linie (każda linia to jedno źródło)
+      const lines = sourcesPart.split("\n").filter(l => l.trim().length > 10);
+      
+      const numberedLines = [];
+      lines.forEach((line, index) => {
+        const num = index + 1;
+        // Usuwamy ewentualne kropki, myślniki lub "Pełny tekst:" na początku
+        let cleanLine = line.replace(/^[\s\-\*•·]+/, "").replace(/^Pełny tekst:\s*/i, "").trim();
+        
+        // Jeśli linia nie zaczyna się od [X], dodajemy to wymuszone [X]
+        if (!cleanLine.startsWith("[" + num + "]") && !cleanLine.startsWith(num + ".")) {
+          cleanLine = `[${num}] ${cleanLine}`;
+        } else if (cleanLine.startsWith(num + ".")) {
+           // Zamień "1. Tytuł" na "[1] Tytuł"
+           cleanLine = cleanLine.replace(new RegExp("^" + num + "\\.\\s*"), `[${num}] `);
+        }
+        
+        numberedLines.push(cleanLine);
+
+        // AKTUALIZACJA KAFELKÓW: Wyciągamy tytuł z tej linii, żeby zastąpić "Mp.pl" na dole
+        if (finalSources[index]) {
+          // Tytuł to tekst od numerka do pierwszego myślnika lub kropki
+          const titleMatch = cleanLine.match(/\]\s*([^–\-\|]+)/);
+          if (titleMatch && titleMatch[1]) {
+            const extractedTitle = titleMatch[1].trim();
+            if (extractedTitle.length > 5) {
+              finalSources[index].title = extractedTitle;
+            }
+          }
+          // Opis to reszta linii
+          const descParts = cleanLine.split(/ – | - |: /);
+          if (descParts.length > 1) {
+            finalSources[index].snippet = descParts.slice(1).join(" - ").trim();
+          }
+        }
+      });
+
+      answer = mainPart + "\n" + numberedLines.join("\n");
+    }
+    
+    // Formatuje źródła dla frontendu
+    const formattedSources = finalSources.map(s => ({
       title: s.title,
       url: s.url,
-      snippet: s.snippet || ""
+      snippet: s.snippet
     }));
 
     return res.json({ answer: answer.trim(), sources: formattedSources });
