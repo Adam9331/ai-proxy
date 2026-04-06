@@ -251,6 +251,31 @@ app.post("/search-super", async (req, res) => {
   }
 });
 
+// ─── POST /chat-gpt (OpenRouter / GPT-4o-mini / Medical Expert) ───────────────
+app.post("/chat-gpt", async (req, res) => {
+  try {
+    if (!checkSecret(req, res)) return;
+    const { question } = req.body || {};
+    if (!question) return res.status(400).json({ error: "Brak pytania" });
+
+    const medicalPrompt = `Jesteś profesjonalnym asystentem medycznym. 
+Zasady:
+- odpowiadaj zawsze po polsku,
+- używaj profesjonalnej terminologii medycznej,
+- bądź rzeczowy i konkretny,
+- jeśli pytanie dotyczy dawkowania lub diagnostyki, opieraj się na aktualnych wytycznych (EBM),
+- zachowaj profesjonalny ton.
+
+Pytanie użytkownika: ${question}`;
+
+    const result = await callOpenRouter(medicalPrompt, "openai/gpt-4o-mini");
+    return res.json({ answer: result.answer, sources: [] });
+  } catch (error) {
+    console.error("GPT Error:", error);
+    return res.status(500).json({ error: "GPT Error: " + (error.message || String(error)) });
+  }
+});
+
 // ─── POST /parse-pdf ──────────────────────────────────────────────────────────
 app.post("/parse-pdf", upload.single("pdf"), async (req, res) => {
   try {
