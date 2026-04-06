@@ -91,6 +91,7 @@ async function callGemini(prompt, useSearch = false) {
     candidate.groundingMetadata.groundingChunks.forEach(chunk => {
       let title = chunk?.web?.title || "";
       const url = chunk?.web?.uri || "";
+      const snippet = chunk?.web?.snippet || chunk?.web?.content || ""; 
       
       if (!url) return;
 
@@ -101,14 +102,14 @@ async function callGemini(prompt, useSearch = false) {
       if (!title || isTechnical) {
         try {
           const domain = new URL(url).hostname.replace("www.", "");
-          // Jeśli mamy techniczny tytuł, używamy domeny + (jeśli tytuł coś zawiera) reszty tytułu
+          // Jeśli mamy techniczny tytuł, używamy domeny
           title = domain.charAt(0).toUpperCase() + domain.slice(1);
         } catch {
           if (!title) title = "Źródło";
         }
       }
 
-      sources.push({ title, url });
+      sources.push({ title, url, snippet });
     });
   }
 
@@ -228,61 +229,22 @@ app.post("/search-web", async (req, res) => {
 Jesteś asystentem wyszukującym informacje w internecie przy użyciu Google Search.
 Zasady:
 - odpowiadaj po polsku,
-- syntetyzuj informacje w spójną odpowiedź,
-- na samym końcu swojej odpowiedzi, po pustej linii, dodaj sekcję w DOKŁADNIE tym formacie:
-OPISY_ZRODEL: [Tytuł źródła 1]: krótki opis zawartości | [Tytuł źródła 2]: krótki opis zawartości
-
-Zasady dla opisów:
-- max 1 krótkie zdanie na każde źródło,
-- opisuj krótko co omawia dany artykuł/strona,
-- oddzielaj kolejne opisy znakiem |
-- nie dodawaj innych tekstów w tej sekcji.
+- syntetyzuj informacje w spójną i precyzyjną odpowiedź na podstawie znalezionych źródeł,
+- NIE dodawaj na końcu sekcji ze źródłami — są one obsługiwane automatycznie.
 
 Pytanie: ${question}`;
 
     const { answer, sources } = await callGemini(prompt, true);
     
-    // Wyciągnij opisy z tekstu odpowiedzi
-    const descriptionsMatch = answer.match(/OPISY_ZRODEL:\s*([^\n\r]+)/i);
-    const descriptionsMap = {};
-    
-    if (descriptionsMatch) {
-      descriptionsMatch[1].split("|").forEach(part => {
-        const [rawTitle, ...descParts] = part.split(":");
-        if (rawTitle && descParts.length > 0) {
-          const cleanTitle = rawTitle.replace(/\[|\]/g, "").trim().toLowerCase();
-          descriptionsMap[cleanTitle] = descParts.join(":").trim();
-        }
-      });
-    }
+    // Formatuje źródła tak, aby pasowały do frontendu. 
+    // Funkcja callGemini przekazuje już odpowiednio sformatowane 'snippet' jeśli jest dostępne.
+    const formattedSources = sources.map(s => ({
+      title: s.title,
+      url: s.url,
+      snippet: s.snippet || ""
+    }));
 
-    // Wyczyść odpowiedź z technicznej sekcji opisów
-    const cleanAnswer = answer.replace(/[\n\r]*OPISY_ZRODEL:[^\n\r]*/im, "").trim();
-    
-    // Formatuje źródła tak, aby pasowały do frontendu
-    const formattedSources = sources.map(s => {
-      const lowerTitle = s.title.toLowerCase();
-      // Spróbuj dopasować opis po tytule
-      let snippet = descriptionsMap[lowerTitle] || "";
-      
-      // Jeśli nie ma dopasowania po pełnym tytule, spróbuj po słowie kluczowym
-      if (!snippet) {
-        for (const [key, val] of Object.entries(descriptionsMap)) {
-          if (lowerTitle.includes(key) || key.includes(lowerTitle)) {
-            snippet = val;
-            break;
-          }
-        }
-      }
-
-      return {
-        title: s.title,
-        url: s.url,
-        snippet: snippet
-      };
-    });
-
-    return res.json({ answer: cleanAnswer, sources: formattedSources });
+    return res.json({ answer: answer.trim(), sources: formattedSources });
   } catch (error) {
     console.error("Gemini Search Error:", error);
     return res.status(500).json({ error: "Proxy error", details: String(error) });
