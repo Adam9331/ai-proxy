@@ -230,14 +230,14 @@ Jesteś asystentem wyszukującym informacje w internecie przy użyciu Google Sea
 Zasady:
 - odpowiadaj po polsku,
 - syntetyzuj informacje w spójną i precyzyjną odpowiedź na podstawie znalezionych źródeł,
-- NIE dodawaj na końcu sekcji ze źródłami — są one obsługiwane automatycznie.
+- na samym końcu swojej odpowiedzi dodaj sekcję "**Wykorzystane materiały:**", w której w jednym lub dwóch zdaniach opisz, co dokładnie zawierają poszczególne przypisy/numery źródeł, na które się powołujesz (np. podaj ich rzeczywiste tytuły i czego dotyczą),
+- NIE dodawaj sekcji z samymi linkami URL, ponieważ interfejs wyświetli je automatycznie pod Twoją odpowiedzią.
 
 Pytanie: ${question}`;
 
     const { answer, sources } = await callGemini(prompt, true);
     
     // Formatuje źródła tak, aby pasowały do frontendu. 
-    // Funkcja callGemini przekazuje już odpowiednio sformatowane 'snippet' jeśli jest dostępne.
     const formattedSources = sources.map(s => ({
       title: s.title,
       url: s.url,
