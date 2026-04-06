@@ -276,6 +276,65 @@ Pytanie użytkownika: ${question}`;
   }
 });
 
+// ─── POST /ask-pdf-claude (OpenRouter / Claude 3.5 Haiku) ─────────────────────
+app.post("/ask-pdf-claude", async (req, res) => {
+  try {
+    if (!checkSecret(req, res)) return;
+    const { question, pageText, title, url } = req.body || {};
+    if (!question || !pageText) return res.status(400).json({ error: "Brak danych" });
+
+    const prompt = `
+Jesteś asystentem Claude analizującym dokument PDF.
+Zasady:
+- odpowiadaj po polsku,
+- opieraj się WYŁĄCZNIE na treści przekazanego dokumentu,
+- jeśli informacja jest w dokumencie — znajdź ją i podaj dokładnie,
+- na końcu odpowiedzi dodaj sekcję w DOKŁADNIE tym formacie:
+CYTATY: "dokładny fragment 1":strona|"dokładny fragment 2":strona|"dokładny fragment 3":strona
+
+Zasady dla cytatów:
+- każdy cytat to 4-8 kolejnych słów skopiowanych DOSŁOWNIE z tekstu dokumentu
+- dodaj po dwukropku numer strony, na której znajduje się ten cytat (szukaj markerów --- Strona X --- w tekście)
+- oddzielaj kolejne cytaty znakiem |
+
+Nazwa dokumentu: ${title || "brak"}
+
+Treść dokumentu PDF:
+${String(pageText).slice(0, 45000)}
+
+Pytanie: ${question}`.trim();
+
+    const result = await callOpenRouter(prompt, "anthropic/claude-3.5-haiku");
+    const raw = result.answer || "";
+
+    const cytatsMatch = raw.match(/CYTATY:\s*([^\n\r]+)/i);
+    let quotes = [];
+    if (cytatsMatch) {
+      const parts = cytatsMatch[1].split("|");
+      for (const part of parts) {
+        const splitPart = part.split(":");
+        if (splitPart.length >= 2) {
+          const pageNumMatch = splitPart[splitPart.length - 1].match(/\d+/);
+          const quoteText = splitPart.slice(0, -1).join(":").replace(/^"|"$/g, "").trim();
+          if (quoteText.length > 5) {
+            quotes.push({ quote: quoteText, page: pageNumMatch ? parseInt(pageNumMatch[0]) : 1 });
+          }
+        } else {
+          const quoteText = part.replace(/^"|"$/g, "").trim();
+          if (quoteText.length > 5) quotes.push({ quote: quoteText, page: 1 });
+        }
+      }
+    }
+
+    const answer = raw.replace(/[\n\r]*CYTATY:[^\n\r]*/im, "").trim();
+    const sources = quotes.slice(0, 3).map(q => ({ title: q.quote, quote: q.quote, page: q.page }));
+    return res.json({ answer, sources });
+  } catch (error) {
+    console.error("Claude PDF Error:", error);
+    return res.status(500).json({ error: "Claude PDF Error: " + (error.message || String(error)) });
+  }
+});
+
 // ─── POST /parse-pdf ──────────────────────────────────────────────────────────
 app.post("/parse-pdf", upload.single("pdf"), async (req, res) => {
   try {
