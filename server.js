@@ -18,7 +18,8 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const PROXY_SECRET   = process.env.PROXY_SECRET || "";
-const MODEL          = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const MODEL             = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const OR_PAGE_MODEL     = process.env.OR_PAGE_MODEL || ""; // np. "anthropic/claude-opus-4" — jeśli ustawiony, /ask-page używa OpenRouter
 
 if (!GEMINI_API_KEY) { console.error("Brak GEMINI_API_KEY"); process.exit(1); }
 if (!TAVILY_API_KEY) { console.error("Brak TAVILY_API_KEY"); process.exit(1); }
@@ -63,7 +64,11 @@ function checkSecret(req, res) {
 // ─── Gemini helper ────────────────────────────────────────────────────────────
 async function callGemini(prompt, useSearch = false) {
   const body = {
-    contents: [{ role: "user", parts: [{ text: prompt }] }]
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: {
+      maxOutputTokens: 8192,   // pełne odpowiedzi, bez obcinania
+      temperature: 0.2
+    }
   };
 
   if (useSearch) {
@@ -166,12 +171,20 @@ Zasady:
 Tytuł strony: ${title || "brak"}
 URL: ${url || "brak"}
 Treść strony:
-${String(pageText).slice(0, 20000)}
+${String(pageText).slice(0, 40000)}
 Pytanie użytkownika:
 ${question}`.trim();
 
-    const { answer, sources: groundingSources } = await callGemini(prompt);
-    const raw = answer;
+    // Jeśli ustawiony OR_PAGE_MODEL — użyj OpenRouter (więcej modeli, wyższe limity)
+    let raw, groundingSources = [];
+    if (OR_PAGE_MODEL && OPENROUTER_API_KEY) {
+      const orResult = await callOpenRouter(prompt, OR_PAGE_MODEL);
+      raw = orResult.answer;
+    } else {
+      const gemResult = await callGemini(prompt);
+      raw = gemResult.answer;
+      groundingSources = gemResult.sources || [];
+    }
 
     // Dla PDF — wyciągnij cytaty i zbuduj text fragment linki
     if (isPdf) {
