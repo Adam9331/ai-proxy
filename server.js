@@ -118,7 +118,7 @@ async function callGemini(prompt, useSearch = false) {
     });
   }
 
-  return { answer, sources };
+  return { answer, sources, grounding: candidate?.groundingMetadata || null };
 }
 
 // ─── GET / ────────────────────────────────────────────────────────────────────
@@ -232,6 +232,27 @@ ${question}`.trim();
 });
 
 // ─── POST /search-web ─────────────────────────────────────────────────────────
+// Wstawia [n] za fragmentami tekstu, które Google powiązał ze źródłami (groundingSupports).
+// Szukamy po treści fragmentu, nie po indeksach (indeksy Google są w bajtach UTF-8, a polskie znaki je przesuwają).
+function addGoogleCitations(text, grounding, chunkToNum) {
+  const supports = (grounding?.groundingSupports || [])
+    .filter(s => s?.segment?.text && (s.groundingChunkIndices || []).length)
+  let out = text
+  let cursor = 0
+  for (const sup of supports) {
+    const seg = sup.segment.text
+    const at = out.indexOf(seg, cursor)
+    if (at === -1) continue
+    const nums = [...new Set(sup.groundingChunkIndices.map(i => chunkToNum.get(i)).filter(Boolean))]
+    if (!nums.length) continue
+    const marker = nums.map(n => `[${n}]`).join("")
+    const insertAt = at + seg.length
+    out = out.slice(0, insertAt) + marker + out.slice(insertAt)
+    cursor = insertAt + marker.length
+  }
+  return out
+}
+
 app.post("/search-web", async (req, res) => {
   try {
     if (!checkSecret(req, res)) return;
@@ -239,88 +260,56 @@ app.post("/search-web", async (req, res) => {
     if (!question) return res.status(400).json({ error: "Brak question" });
 
     const prompt = `
-Jesteś asystentem wyszukującym informacje w internecie przy użyciu Google Search.
+Wyszukaj w Google aktualne informacje i odpowiedz na pytanie lekarza.
 Zasady:
-- odpowiadaj po polsku,
-- syntetyzuj informacje w spójną odpowiedź, powołując się w tekście na źródła (używaj przypisów [1], [2]...),
-- na samym końcu swojej odpowiedzi ZAWSZE dodaj pogrubioną sekcję "**Wykorzystane źródła:**",
-- pod tą sekcją wypisz KAŻDE źródło w OSOBNEJ LINII, ZACZYNAJĄC OD NUMERU W NAWIASIE, według wzoru:
-[1] Tytuł strony/artykułu - streszczenie co tam jest.
-[2] Tytuł kolejnej strony - opis zawartości.
-
-- Musisz rygorystycznie używać formatu [Liczba] na początku każdej linii ze źródłem!
-- Liczba w nawiasie musi odpowiadać numerowi przypisu w Twoim tekście.
-- NIE twórz zbiorczych opisów. Każde źródło = jedna linia zaczynająca się od [Numer].
+- ZAWSZE najpierw użyj wyszukiwarki Google, nie odpowiadaj z pamięci,
+- odpowiadaj po polsku, rzeczowo i zwięźle,
+- NIE wstawiaj numerów przypisów i NIE pisz na końcu listy źródeł — system doda je sam na podstawie wyszukiwania.
 
 Pytanie: ${question}`;
 
-    const { answer: rawAnswer, sources: groundingSources } = await callGemini(prompt, true);
-    let answer = rawAnswer;
-    
-    // INTELIGENTNY PARSER ŹRÓDEŁ
-    const sourcesHeader = "**Wykorzystane źródła:**";
-    const headerIndex = answer.indexOf(sourcesHeader);
-    let finalSources = groundingSources.map(s => ({ ...s, snippet: s.snippet || "" }));
-
-    if (headerIndex !== -1) {
-      const mainPart = answer.substring(0, headerIndex + sourcesHeader.length);
-      const sourcesPart = answer.substring(headerIndex + sourcesHeader.length).trim();
-      
-      // Rozbijamy sekcję źródeł na linie (każda linia to jedno źródło)
-      const lines = sourcesPart.split("\n").filter(l => l.trim().length > 10);
-      
-      const numberedLines = [];
-      lines.forEach((line, index) => {
-        const num = index + 1;
-        // Usuwamy ewentualne kropki, myślniki lub "Pełny tekst:" na początku
-        let cleanLine = line.replace(/^[\s\-\*•·]+/, "").replace(/^Pełny tekst:\s*/i, "").trim();
-        
-        // Jeśli linia nie zaczyna się od [X], dodajemy to wymuszone [X]
-        if (!cleanLine.startsWith("[" + num + "]") && !cleanLine.startsWith(num + ".")) {
-          cleanLine = `[${num}] ${cleanLine}`;
-        } else if (cleanLine.startsWith(num + ".")) {
-           // Zamień "1. Tytuł" na "[1] Tytuł"
-           cleanLine = cleanLine.replace(new RegExp("^" + num + "\\.\\s*"), `[${num}] `);
-        }
-        
-        numberedLines.push(cleanLine);
-
-        // AKTUALIZACJA KAFELKÓW: Wyciągamy tytuł z tej linii, żeby zastąpić "Mp.pl" na dole
-        if (finalSources[index]) {
-          // Tytuł to tekst od numerka do pierwszego myślnika lub kropki
-          const titleMatch = cleanLine.match(/\]\s*([^–\-\|]+)/);
-          if (titleMatch && titleMatch[1]) {
-            const extractedTitle = titleMatch[1].trim();
-            if (extractedTitle.length > 5) {
-              finalSources[index].title = extractedTitle;
-            }
-          }
-          // Opis to reszta linii
-          const descParts = cleanLine.split(/ – | - |: /);
-          if (descParts.length > 1) {
-            finalSources[index].snippet = descParts.slice(1).join(" - ").trim();
-          }
-        }
-      });
-
-      answer = mainPart + "\n" + numberedLines.join("\n");
+    let result = await callGemini(prompt, true);
+    // model czasem odpowiada bez wyszukiwania — wtedy jedna ponowna próba
+    if (!(result.grounding?.groundingChunks || []).length) {
+      console.log("search-web: brak groundingChunks, ponawiam z wymuszeniem wyszukiwania");
+      result = await callGemini(prompt + "\n\nOdpowiedź MUSI być oparta na wynikach wyszukiwania Google.", true);
     }
-    
-    // Formatuje źródła dla frontendu
-    const formattedSources = finalSources.map(s => ({
-      title: s.title,
-      url: s.url,
-      snippet: s.snippet
-    }));
 
-    return res.json({ answer: answer.trim(), sources: formattedSources });
+    const chunks = (result.grounding?.groundingChunks || []).filter(c => c?.web?.uri);
+    console.log(`search-web: ${chunks.length} źródeł z Google`);
+
+    if (!chunks.length) {
+      return res.json({
+        answer: result.answer.trim() + "\n\n(Google nie zwrócił źródeł dla tej odpowiedzi — traktuj ją ostrożnie.)",
+        sources: []
+      });
+    }
+
+    // numeracja źródeł 1..n w kolejności z Google (bez duplikatów adresów)
+    const sources = [];
+    const chunkToNum = new Map();
+    const seen = new Map();
+    chunks.forEach(c => {
+      const origIdx = result.grounding.groundingChunks.indexOf(c);
+      const key = c.web.uri;
+      if (!seen.has(key)) {
+        sources.push({ title: c.web.title || "Źródło", url: c.web.uri, snippet: "" });
+        seen.set(key, sources.length);
+      }
+      chunkToNum.set(origIdx, seen.get(key));
+    });
+
+    const cited = addGoogleCitations(result.answer.trim(), result.grounding, chunkToNum);
+    const list = sources.map((s, i) => `[${i + 1}] ${s.title}`).join("\n");
+    const answer = `${cited}\n\n**Wykorzystane źródła:**\n${list}`;
+
+    return res.json({ answer, sources });
   } catch (error) {
     console.error("Gemini Search Error:", error);
     return res.status(500).json({ error: "Proxy error", details: String(error) });
   }
 });
 
-// ─── POST /search-super (OpenRouter / Perplexity) ─────────────────────────────
 app.post("/search-super", async (req, res) => {
   try {
     if (!checkSecret(req, res)) return;
