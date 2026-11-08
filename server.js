@@ -62,7 +62,7 @@ function checkSecret(req, res) {
 }
 
 // ─── Gemini helper ────────────────────────────────────────────────────────────
-async function callGemini(prompt, useSearch = false) {
+async function callGemini(prompt, useSearch = false, opts = {}) {
   const body = {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     generationConfig: {
@@ -74,8 +74,13 @@ async function callGemini(prompt, useSearch = false) {
   if (useSearch) {
     body.tools = [{ google_search: {} }];
   }
+  // Gemini 3.5 nie zwraca groundingMetadata, gdy szuka w fazie "myślenia" —
+  // minimalne myślenie przenosi wyszukiwanie do fazy odpowiedzi.
+  if (opts.thinkingLevel) {
+    body.generationConfig.thinkingConfig = { thinkingLevel: opts.thinkingLevel };
+  }
 
-  const geminiRes = await fetch(
+  const send = () => fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
     {
       method: "POST",
@@ -83,12 +88,21 @@ async function callGemini(prompt, useSearch = false) {
       body: JSON.stringify(body)
     }
   );
-  
-  const data = await geminiRes.json();
+
+  let geminiRes = await send();
+  let data = await geminiRes.json();
+  if (!geminiRes.ok && geminiRes.status === 400 && body.generationConfig.thinkingConfig) {
+    console.log("Gemini odrzucił thinkingConfig, ponawiam bez niego:", JSON.stringify(data).slice(0, 300));
+    delete body.generationConfig.thinkingConfig;
+    geminiRes = await send();
+    data = await geminiRes.json();
+  }
   if (!geminiRes.ok) throw new Error(JSON.stringify(data));
 
   const candidate = data?.candidates?.[0];
-  const answer = candidate?.content?.parts?.map(p => p.text).join("\n") || "Brak odpowiedzi.";
+  const answer = (candidate?.content?.parts || [])
+    .filter(p => p.text && !p.thought)
+    .map(p => p.text).join("\n") || "Brak odpowiedzi.";
   
   // Wyciąganie źródeł z Google Search Grounding
   let sources = [];
@@ -232,6 +246,25 @@ ${question}`.trim();
 });
 
 // ─── POST /search-web ─────────────────────────────────────────────────────────
+// Zamienia adresy URL wpisane przez model w tekście na [n] i zwraca listę źródeł.
+function urlsToCitations(text) {
+  const sources = [];
+  const numFor = new Map();
+  const re = /\(?\s*(https?:\/\/[^\s)\]]+)\s*\)?/g;
+  const out = text.replace(re, (_m, rawUrl) => {
+    const url = rawUrl.replace(/[.,;:]+$/, "");
+    if (!numFor.has(url)) {
+      let title = url;
+      try { title = new URL(url).hostname.replace(/^www\./, ""); } catch {}
+      if (title.includes("vertexaisearch")) title = "Źródło z wyszukiwania Google";
+      sources.push({ title, url, snippet: "" });
+      numFor.set(url, sources.length);
+    }
+    return `[${numFor.get(url)}]`;
+  }).replace(/\s+\[(\d+)\]/g, "[$1]");
+  return { text: out, sources };
+}
+
 // Wstawia [n] za fragmentami tekstu, które Google powiązał ze źródłami (groundingSupports).
 // Szukamy po treści fragmentu, nie po indeksach (indeksy Google są w bajtach UTF-8, a polskie znaki je przesuwają).
 function addGoogleCitations(text, grounding, chunkToNum) {
@@ -268,11 +301,33 @@ Zasady:
 
 Pytanie: ${question}`;
 
-    let result = await callGemini(prompt, true);
-    // model czasem odpowiada bez wyszukiwania — wtedy jedna ponowna próba
+    let result = await callGemini(prompt, true, { thinkingLevel: "minimal" });
+    console.log("search-web: groundingMetadata =", result.grounding ? Object.keys(result.grounding).join(",") : "brak");
+
+    // Zapas: Gemini 3.5 czasem gubi groundingMetadata — prosimy o adresy wprost w tekście
     if (!(result.grounding?.groundingChunks || []).length) {
-      console.log("search-web: brak groundingChunks, ponawiam z wymuszeniem wyszukiwania");
-      result = await callGemini(prompt + "\n\nOdpowiedź MUSI być oparta na wynikach wyszukiwania Google.", true);
+      console.log("search-web: brak groundingChunks, ponawiam z prośbą o adresy w tekście");
+      const promptUrls = `
+Wyszukaj w Google aktualne informacje i odpowiedz na pytanie lekarza.
+Zasady:
+- ZAWSZE użyj wyszukiwarki Google, nie odpowiadaj z pamięci,
+- odpowiadaj po polsku, rzeczowo i zwięźle,
+- po każdym zdaniu opartym na źródle wstaw w nawiasie okrągłym pełny adres URL tej strony z wyników wyszukiwania, np. (https://...),
+- używaj wyłącznie adresów, które faktycznie zwróciło wyszukiwanie,
+- NIE pisz na końcu listy źródeł.
+
+Pytanie: ${question}`;
+      result = await callGemini(promptUrls, true, { thinkingLevel: "minimal" });
+      console.log("search-web (ponowienie): groundingMetadata =", result.grounding ? Object.keys(result.grounding).join(",") : "brak");
+
+      if (!(result.grounding?.groundingChunks || []).length) {
+        const fromText = urlsToCitations(result.answer.trim());
+        if (fromText.sources.length) {
+          console.log(`search-web: ${fromText.sources.length} źródeł wyciągniętych z treści`);
+          const list = fromText.sources.map((s, i) => `[${i + 1}] ${s.title}`).join("\n");
+          return res.json({ answer: `${fromText.text}\n\n**Wykorzystane źródła:**\n${list}`, sources: fromText.sources });
+        }
+      }
     }
 
     const chunks = (result.grounding?.groundingChunks || []).filter(c => c?.web?.uri);
